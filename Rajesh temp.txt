@@ -1,0 +1,143 @@
+import streamlit as st
+from snowflake.snowpark.context import get_active_session
+import pandas as pd
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+from snowflake.snowpark import Session
+from snowflake.snowpark.functions import col
+import re
+from azure.storage.blob import BlobServiceClient
+
+
+
+st.title(':blue[Naming Navigator]')
+#https://app.snowflake.com/wswrvqi/eg14158/#/streamlit-apps
+session = get_active_session()
+
+
+
+#st.title(':blue[Naming Navigator]')
+
+tabs = st.tabs(['**Overview**', '**Naming Convention Builder**', '**Monitor Conventions**', '**Notification Center**:shield:'])
+
+with tabs[0]:
+    st.markdown("**Ensure clarity and compliance with unified naming conventions**")
+
+    # Key Metrics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(label="Naming Conventions Built", value="3")
+    with col2:
+        st.metric(label="Compliance Rate", value="19%")
+    with col3:
+        st.metric(label="Snowflake Objects Covered", value="3")
+
+    #st.write("Compliance Rate Over time")
+
+    col1, col2 = st.columns((9, 3))
+    with col2:
+        date_period = st.selectbox("Date Period", ["Last 7 Days", "Last 30 Days", "Last 60 Days", "Last 90 Days", 'Last 120 Days', "Last 365 Days"])
+    
+    with col1:
+        date_filter = {
+            "Last 7 Days": 7,
+            "Last 30 Days": 30,
+            "Last 60 Days": 60,
+            "Last 90 Days": 90,
+            "Last 120 Days": 120,
+            "Last 365 Days": 365
+        }
+
+        days = date_filter[date_period]
+        end_date = datetime.today()
+        start_date = end_date - timedelta(days=days)
+
+        # Fetch databases created within the date range
+        sql_query_databases = f"""
+            SELECT 
+                database_name as name, created
+            FROM SNOWFLAKE.ACCOUNT_USAGE.DATABASES
+            WHERE created BETWEEN '{start_date}' AND '{end_date}' 
+            AND NAME NOT IN ('SNOWFLAKE','SNOWFLAKE_SAMPLE_DATA')
+        """
+        databases = session.sql(sql_query_databases).to_pandas()
+
+        # Ensure 'CREATED' column is in datetime format
+        databases['CREATED'] = pd.to_datetime(databases['CREATED']).dt.date
+
+        st.write("Fetched Databases:")
+        st.dataframe(databases)
+
+        schema_data = []
+
+        # Loop over each database to fetch schema names
+        for db in databases['NAME']:
+            sql_query_schemas = f"""
+                SELECT 
+                    CONCAT('{db}', '.', SCHEMA_NAME) as name, CREATED
+                FROM {db}.INFORMATION_SCHEMA.SCHEMATA
+                WHERE CREATED BETWEEN '{start_date}' AND '{end_date}'
+                AND SCHEMA_NAME NOT IN ('PUBLIC')
+            """
+            
+            schemas = session.sql(sql_query_schemas).to_pandas()
+
+            # Ensure 'CREATED' column is in datetime format
+            schemas['CREATED'] = pd.to_datetime(schemas['CREATED']).dt.date
+            
+            schema_data.append(schemas)
+
+        # Concatenate all the fetched schemas
+        if schema_data:
+            schemas = pd.concat(schema_data, ignore_index=True)
+        else:
+            schemas = pd.DataFrame(columns=['NAME', 'CREATED'])
+
+        st.write("Fetched Schemas:")
+        st.dataframe(schemas)
+
+        # Remove database name from schema names for compliance check
+        schemas['SCHEMA_NAME'] = schemas['NAME'].apply(lambda x: x.split('.')[1])
+        
+        # Define the compliance checking function
+        def check_compliance(names, pattern):
+            total = len(names)
+            compliant = names.apply(lambda x: bool(re.match(pattern, x, re.IGNORECASE))).sum()
+            return total, compliant
+
+        # Create a date range
+        date_range = pd.date_range(start=start_date.date(), end=end_date.date())
+        st.write(date_range)
+        compliance_data = []
+        st.write(databases['CREATED'].dtype)
+        for date in date_range:
+            dbs_on_date = databases[databases['CREATED'] == date.date()]
+            schs_on_date = schemas[schemas['CREATED'] == date.date()]
+            #st.write(dbs_on_date)
+            db_total, db_compliant = check_compliance(dbs_on_date['NAME'], r'^[a-zA-Z0-9_]+_(dev|qa|prod)_db$')
+            sch_total, sch_compliant = check_compliance(schs_on_date['SCHEMA_NAME'], r'^[a-zA-Z0-9]+_(dev|qa|prod)_sch$')
+
+            db_compliance_rate = (db_compliant / db_total) * 100 if db_total > 0 else 0
+            sch_compliance_rate = (sch_compliant / sch_total) * 100 if sch_total > 0 else 0
+
+            compliance_data.append({
+                'Date': date,
+                'Database_Compliance_Rate': db_compliance_rate,
+                'Schema_Compliance_Rate': sch_compliance_rate
+            })
+
+        compliance_df = pd.DataFrame(compliance_data)
+
+        st.write("Compliance Rate Over Selected Period")
+        st.dataframe(compliance_df)
+
+        # Plotting compliance rate
+        fig, ax = plt.subplots()
+        compliance_df.plot(x='Date', y=['Database_Compliance_Rate', 'Schema_Compliance_Rate'], kind='line', ax=ax, marker='o')
+        ax.set_ylabel('Compliance Rate (%)')
+        ax.set_xlabel('Date')
+        ax.set_title('Compliance Rate Over Selected Period')
+        st.pyplot(fig)
+
+
+

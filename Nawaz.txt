@@ -1,0 +1,502 @@
+import streamlit as st
+from snowflake.snowpark.context import get_active_session
+import pandas as pd
+import matplotlib.pyplot as plt
+import re
+
+st.set_page_config(layout="wide")
+
+# st.markdown("""
+#     <style>
+#         body {
+#             background-color: #F0F2F6;
+#             color: #333333;
+#         }
+#         .main {
+#             background-color: #FFFFFF;
+#             border-radius: 10px;
+#             padding: 20px;
+#         }
+#         h1 {
+#             color: #11567F;
+#         }
+#         .css-1oe4hzb {
+#             background-color: #11567F;
+#             border: none;
+#             color: white;
+#             font-size: 16px;
+#             padding: 10px 20px;
+#             border-radius: 5px;
+#             cursor: pointer;
+#         }
+#         .css-1oe4hzb:hover {
+#             background-color: #0E4A68;
+#         }
+#         .stButton>button {
+#             background-color: #1A6CE7;
+#             color: white;
+#             border: None;
+#             padding: 10px 20px;
+#             border-radius: 30px;
+#             cursor: pointer;
+#         }
+#         .stButton>button:hover {
+#             background-color: #0E4A68;
+#         }
+#         .stTextInput>div>div>input {
+#             border: None;
+#             padding: 10px;
+#             border-radius: 37px;
+#         }
+#         .stTextInput>div>div>input:focus {
+#             border: 30px;
+#         }
+#         .stSelectbox>div>div>input {
+#             border: 1px solid #CCCCCC;
+#             padding: 10px;
+#             border-radius: 30px;
+#         }
+#         .stSelectbox>div>div>input:focus {
+#             border: 1px solid #11567F;
+#         }
+#         .css-12oz5g7 {
+#             border-radius: 10px;
+#         }
+#         .stMetric, .stChart, .stDataFrame {
+#             background-color: #FFFFFF;
+#             border: 1px solid #EEEEEE;
+#             border-radius: 10px;
+#             padding: 10px;
+#             margin-bottom: 20px;
+#         }
+#         .stMetric label, .stMetric div, .stChart label, .stDataFrame label {
+#             color: #11567F;
+#             font-weight: bold;
+#         }
+#         .stExpander {
+#             background-color: #E5F6FE;
+#             border: 1px solid #11567F;
+#             border-radius: 10px;
+#         }
+#     </style>
+# """, unsafe_allow_html=True)
+
+st.title('Naming Navigator')
+
+#################For tab[2]
+def check_compliance(object_name, object_type):
+    naming_rules_df = pd.DataFrame(session.sql("SELECT * FROM STREAMLIT_DB.APP_SCH.NAMING_RULES where is_active = TRUE").collect())
+    variables_df = pd.DataFrame(session.sql("SELECT * FROM STREAMLIT_DB.APP_SCH.VARIABLES").collect())
+
+    filtered_rules = naming_rules_df[naming_rules_df['OBJECT_TYPE'] == object_type]
+
+    if filtered_rules.empty:
+        return False
+
+    template = filtered_rules.iloc[0]['TEMPLATE']
+    template_parts = template.split('_')
+    object_parts = object_name.split('_')
+
+    for template_part, object_part in zip(template_parts, object_parts):
+        variable_values = variables_df[variables_df['NAME'] == template_part]['VALUE'].values
+        if len(variable_values) == 0 or object_part not in variable_values[0]:
+            return False
+    return True
+
+#################For tab[1]
+def check_quotes(input_string):
+    pattern = r"'[^']*'(?:\s*,\s*'[^']*')+"
+    input = input_string.strip()
+    all_single_quoted = False
+    if (re.match(pattern, input)) or (input.startswith("'") and input.endswith("'") and input.strip("'").isalnum()):
+        all_single_quoted = True
+    return all_single_quoted
+
+session = get_active_session()
+user = st.experimental_user["user_name"]
+tabs = st.tabs(['**Overview**', '**Naming Convention Builder**', '**Monitor Conventions**', '**Notification Center**'])
+
+def initialize_session():
+    session_state = {}
+    session_state['selected_options'] = []
+    return session_state
+
+def toggle_edit_mode():
+    st.session_state['disabled'] = not st.session_state['disabled']
+    st.session_state['changes_made'] = False
+
+def get_session_state():
+    if 'selected_options' not in st.session_state:
+        st.session_state['selected_options'] = []
+    
+    if 'disabled' not in st.session_state: 
+        st.session_state['disabled'] = True    
+
+    if 'object_type' not in st.session_state:
+        st.session_state['object_type'] = 'Database'
+    
+    if 'changes_made' not in st.session_state:
+        st.session_state['changes_made'] = False
+    
+    if 'original_values' not in st.session_state:
+        st.session_state['original_values'] = {'prefix': '', 'suffix': '', 'selected_options': []}
+
+def disable_session_state():
+    if 'disabled' not in st.session_state: 
+        st.session_state['disabled'] = True    
+
+
+get_session_state()
+disable_session_state()
+
+with tabs[1]:
+    with st.expander("**Manage variables**"):
+        data = session.sql("SELECT id, name, value FROM STREAMLIT_DB.APP_SCH.VARIABLES WHERE IS_ACTIVE = True ORDER BY ID;").collect()
+        st.subheader('Variables')
+        names = []
+        # st.write(st.session_state)
+        for dt in data:
+            id = dt['ID']
+            name = dt['NAME'].strip("{}'")
+            value = dt['VALUE'].strip("{}[]'").replace("\"","'")
+            temp = -1
+            edit_key = f"{id}_edit"
+            delete_key = f"{id}_delete"
+            st.session_state[edit_key] = st.session_state.get(edit_key, False)
+            st.session_state[delete_key] = st.session_state.get(delete_key, False)
+            names.append(name)
+            
+            var_disabled = not st.session_state[edit_key]
+            val_disabled = not st.session_state[edit_key]
+            
+            with st.container():
+                col1, col2, col3, col4, col5 = st.columns([2,2,0.5,0.5,0.5])
+                with col1:
+                    edit_var = st.text_input('Variable Name', value=name, key=f"{id}_name", disabled=var_disabled)
+                    low_edit_var = edit_var.lower()
+                with col2:
+                    edit_val = st.text_input('Values', value=value, key=f"{id}_value", disabled=val_disabled) 
+                    up_edit_val = edit_val.upper()
+                with col3:
+                    st.write("")
+                    st.write("")
+                    if st.button("Edit", key=f"{id}_edit_btn"):
+                        st.session_state[edit_key] = not st.session_state[edit_key]
+                        st.experimental_rerun()
+                with col4:
+                    st.write("")
+                    st.write("")
+                    delete = st.button("Delete", key=f'''{id}_delete_btn''')
+                    if delete or st.session_state[delete_key]:
+                        st.session_state[delete_key] = True 
+                        temp = session.sql(f"""select count(*) from STREAMLIT_DB.APP_SCH.NAMING_RULES_TST where IS_ACTIVE = True and TEMPLATE like '%{low_edit_var}%';""").collect()[0][0]                     
+                with col5:
+                    st.write("")
+                    st.write("")
+                    if st.button("Save", key=f"{id}_save", disabled=var_disabled): 
+                        if value != up_edit_val and check_quotes(edit_val):                           
+                            query1 = f"""update STREAMLIT_DB.APP_SCH.VARIABLES set IS_ACTIVE = False where ID = {id};"""
+                            query2 = f"""insert into STREAMLIT_DB.APP_SCH.VARIABLES(ID, NAME, VALUE, IS_ACTIVE, CREATED_TS, CREATED_BY)
+                                        select {id}, '{edit_var}', array_construct({up_edit_val}), True, current_timestamp, '{user}';"""
+                            session.sql(query1).collect()
+                            session.sql(query2).collect() 
+                            st.session_state[edit_key] = not st.session_state[edit_key]
+                            st.experimental_rerun()                        
+                        if low_edit_var != name and low_edit_var not in names:   
+                            update_query = f"""UPDATE STREAMLIT_DB.APP_SCH.VARIABLES
+                                            SET NAME = '{low_edit_var}', UPDATED_TS = current_timestamp, UPDATED_BY = '{user}'
+                                            WHERE ID = {id};"""
+                            session.sql(update_query).collect()
+                            st.session_state[edit_key] = not st.session_state[edit_key]
+                            st.experimental_rerun()
+                        if value == up_edit_val and low_edit_var == name:
+                            st.session_state[edit_key] = not st.session_state[edit_key]
+                            st.experimental_rerun()
+                if not check_quotes(edit_val):
+                    st.write(f":red[Add the variable values as 'VAL1','VAL2' and so on]")
+                    st.session_state[edit_key] = not st.session_state[edit_key]
+                elif low_edit_var != name:
+                    st.write(f":red[Variable with the same name already exists]")
+                    st.session_state[edit_key] = not st.session_state[edit_key]
+                if st.session_state[f'{id}_delete'] and temp > 0:
+                    st.write(f":red[Cannot delete the variable. {temp} naming conventions depend on it]")
+                    st.session_state[f'{id}_delete'] = not st.session_state[f'{id}_delete']
+                elif temp == 0 and st.session_state[f'{id}_delete']:
+                    st.write("Are you sure you want to delete the variable?")
+                    coly, coln = st.columns([1,1])
+                    with coly:
+                        yes = st.button(f":red[Yes]")
+                        if yes: 
+                            st.session_state[delete_key] = True
+                            session.sql(f"""delete from STREAMLIT_DB.APP_SCH.VARIABLES where ID = {id};""").collect()
+                            st.experimental_rerun()
+                    with coln:
+                        no = st.button("No")
+                        if no:
+                            st.session_state[delete_key] = False
+                            st.experimental_rerun()
+
+        
+        add_var = st.button("Add Variables")
+        if "addvar_state" not in st.session_state:
+            st.session_state.addvar_state = False
+                
+        if add_var or st.session_state.addvar_state:
+            st.session_state.addvar_state = True           
+            
+            st.subheader('Add Variables')
+            st.session_state.op = ''
+            result = -1    
+            with st.container():
+                cola, colb, colc, cold = st.columns([2,2,1,1])
+                with cola:
+                    new_var = st.text_input('Variable Name', key=f"new_var")
+                    low_new_var = new_var.lower()
+                with colc:
+                    st.write("")
+                    st.write("")
+                    upload = st.button("Upload Files")
+                    if "upload_state" not in st.session_state:
+                        st.session_state.upload_state = False
+                    if upload or st.session_state.upload_state: 
+                        st.session_state.upload_state = True
+                        fname = new_var + ".csv"
+                        query = f"select count(METADATA$FILENAME) from @STREAMLIT_DB.APP_SCH.VARIABLE_VALS where METADATA$FILENAME like '{fname}';"
+                        result = session.sql(query).collect()[0][0]                        
+                        if result > 0: 
+                            df = session.read.csv(f"@VARIABLE_VALS/{fname}").collect()                          
+                            csv_
+                            val = ''
+                            for data in df:
+                                csv_val = csv_val + data[0] + ', '
+                            st.session_state.op = csv_val[:-2]                     
+                with colb:
+                    new_val = st.text_input('Values', value=st.session_state.op, key=f"new_val")  
+                    up_new_val = new_val.upper()
+                with cold:
+                    st.write("")
+                    st.write("")
+                    if st.button("Submit"):                   
+                        if low_new_var not in names and check_quotes(up_new_val):                         
+                            ins_query = f"""insert into STREAMLIT_DB.APP_SCH.VARIABLES(NAME, VALUE, IS_ACTIVE, CREATED_TS, CREATED_BY)
+                                            select '{low_new_var}', array_construct({up_new_val}), True, current_timestamp, '{user}';"""
+                            session.sql(ins_query).collect()
+                            st.session_state.addvar_state = False
+                            st.session_state.upload_state = False
+                            st.experimental_rerun()
+                if result == 0:
+                    st.write(f":red[Given path: '@VARIABLE_VALS/{fname}' could not be found or is empty.]")
+                if up_new_val != '' and not check_quotes(up_new_val):
+                    st.write(f":red[Add the variable values as 'VAL1','VAL2' and so on]")
+                if low_new_var in names:
+                    st.write(f":red[Variable with the same name already exists]")
+
+                    
+    ###########create template, nawaz
+    # Define a list of options
+    options = ['Database', 'Schema', 'Warehouse', 'Role', 'Stage', 'Table', 'View', 'File Format']
+    
+    # Create a dropdown select box
+    selected_option = st.selectbox('Select an object type:', options)
+    
+    
+    
+    fetch_query = """SELECT name FROM STREAMLIT_DB.APP_SCH.VARIABLES WHERE IS_ACTIVE = True;"""
+    variables = session.sql(fetch_query).collect()
+    variables = [var['NAME'] for var in variables]
+    # Fetch current active template for the selected object type
+    fetch_cur_value = f"""SELECT PREFIX,TEMPLATE,SUFFIX FROM STREAMLIT_DB.APP_SCH.NAMING_RULES WHERE OBJECT_TYPE='{selected_option}' AND IS_ACTIVE=True;"""
+    cur_values = session.sql(fetch_cur_value).collect()
+    
+    if st.session_state['object_type'] != selected_option:
+        if not cur_values:
+            st.session_state['disabled']=False
+        st.session_state['selected_options'] = []
+        st.session_state['object_type'] = selected_option
+        st.session_state['changes_made'] = False
+    
+    
+    
+    # Check if there are current values
+    if cur_values:
+        prefix_value, build_name_value, suffix_value = cur_values[0][0], cur_values[0][1], cur_values[0][2]
+        arr_name_value = build_name_value.split('-')
+    
+        if st.session_state['disabled']:
+            
+            st.session_state['original_values'] = {
+                'prefix': prefix_value,
+                'suffix': suffix_value,
+                'selected_options': arr_name_value
+            }
+    
+        # Initialize widgets with current or original values
+        prefix_option = st.text_input('Add Prefix', value=st.session_state['original_values']['prefix'] if not st.session_state['disabled'] else prefix_value, disabled=st.session_state['disabled'], key='prefix_input')
+        suffix_option = st.text_input('Add Suffix', value=st.session_state['original_values']['suffix'] if not st.session_state['disabled'] else suffix_value, disabled=st.session_state['disabled'], key='suffix_input')
+        selected_options = st.multiselect(
+            'Build Naming Convention:',
+            variables,
+            st.session_state['selected_options'] if not st.session_state['disabled'] else arr_name_value,
+            disabled=st.session_state['disabled'],
+            key='multiselect_input'
+        )
+    else:
+        prefix_option = st.text_input('Add Prefix:', key='prefix_input')
+        selected_options = st.multiselect('Build Naming Convention:', variables, st.session_state['selected_options'], key='multiselect_input')
+        suffix_option = st.text_input('Add Suffix:', key='suffix_input')
+        
+    naming_convention_body = ">\\_<".join(list(selected_options))
+    
+    if prefix_option or suffix_option:
+        naming_convention = f"{prefix_option}_<{naming_convention_body}>_{suffix_option}".strip('_')
+    else:
+        naming_convention = f"<{naming_convention_body}>"
+    
+    if selected_options:
+        st.markdown("##### Reorder the selected options using :arrows_counterclockwise: to swap adjacent options:")
+        
+    
+        max_options = 5  # Maximum number of options to display
+        cols = st.columns([1, *([5]*max_options*2), 1])  # Add padding columns on either side to center content
+        
+        for i in range(max_options):
+            if i < len(selected_options):
+                with cols[2 * i + 1]:
+                    st.write(selected_options[i])
+                if i < len(selected_options) - 1:
+                    with cols[2 * i + 2]:
+                        if st.button(':arrows_counterclockwise:', key=f'swap_{i}', help='Swap with next' , disabled=st.session_state['disabled']):
+                            st.session_state['selected_options'][i], st.session_state['selected_options'][i + 1] = st.session_state['selected_options'][i + 1], st.session_state['selected_options'][i]
+                            selected_options[i], selected_options[i + 1] = selected_options[i + 1], selected_options[i]
+                            st.experimental_rerun()
+            else:
+                with cols[2 * i + 1]:
+                    st.write("")
+    
+    st.session_state['selected_options'] = selected_options
+    selected_options = st.session_state['selected_options']
+    
+    st.markdown(f""" #### **Preview:** {naming_convention} """)
+    
+    if cur_values:
+        df = pd.DataFrame(cur_values)
+        st.table(df)
+    
+    if cur_values:
+        if (prefix_option != prefix_value or suffix_option != suffix_value or selected_options != arr_name_value):
+            st.session_state['changes_made'] = True
+    else:
+        if prefix_option or suffix_option or selected_options:
+            st.session_state['changes_made'] = True
+    
+    if 'show_confirmation' not in st.session_state:
+        st.session_state['show_confirmation'] = False
+    
+    def confirm_save():
+        st.session_state['show_confirmation'] = True
+    
+    def perform_save():
+        st.session_state['disabled'] = True
+        x = "-".join(list(st.session_state['selected_options']))
+        database = str(st.session_state['object_type'])
+        
+        if cur_values:
+            update_query = f"UPDATE STREAMLIT_DB.APP_SCH.NAMING_RULES SET IS_ACTIVE=False WHERE OBJECT_TYPE='{database}' AND IS_ACTIVE=True"
+            session.sql(update_query).collect()
+        
+        insert_query = f"""INSERT INTO STREAMLIT_DB.APP_SCH.NAMING_RULES VALUES ('{database}','{prefix_option}','{x}','{suffix_option}' ,1,CURRENT_TIMESTAMP ,CURRENT_ROLE() ,CURRENT_TIMESTAMP ,CURRENT_ROLE());"""
+        
+        session.sql(insert_query).collect()
+        
+        st.write("SAVED SUCCESSFULLY")
+        st.session_state['show_confirmation'] = False
+        st.experimental_rerun()
+    
+    if cur_values:
+        col1, col2, col3 = st.columns([0.25, 0.25, 0.25])
+        if st.session_state['disabled']:
+            with col1:
+                if st.button('Edit'):
+                    toggle_edit_mode()
+                    st.experimental_rerun()
+        else:
+            with col1:
+                if st.button('Cancel'):
+                    st.session_state['disabled'] = True
+                    st.experimental_rerun()
+            with col2:
+                if st.session_state['changes_made'] and st.button('Save'):
+                    confirm_save()
+    else:
+        col1, col2, col3 = st.columns([0.25, 0.25, 0.25])
+        with col1:
+            if st.button('Save'):
+                confirm_save()
+    
+    if st.session_state['show_confirmation']:
+        st.write("This is going to override the current naming template! Are you sure you want to save the changes?")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Yes"):
+                perform_save()
+        with col2:
+            if st.button("No"):
+                st.session_state['show_confirmation'] = False
+                st.experimental_rerun()
+
+    
+
+
+with tabs[2]:
+    columns = st.columns((8, 3))
+    template = pd.DataFrame(session.sql('SELECT distinct UPPER(OBJECT_TYPE) OBJECT_TYPE, TEMPLATE FROM STREAMLIT_DB.APP_SCH.NAMING_RULES WHERE IS_ACTIVE =TRUE;').collect())
+    object_types_list = sorted(template['OBJECT_TYPE'].tolist())
+    if len(object_types_list) > 0:
+        with columns[0]:
+            selected_object = st.selectbox('Choose object type', object_types_list)
+            covention = sorted(template.loc[template['OBJECT_TYPE'] == selected_object]['TEMPLATE'].tolist())
+            st.write("**Current Naming Convention**")
+            st.subheader(f"_<{covention[0]}>_")
+            st.write("")
+
+            query = """
+                SELECT database_name AS object_name, 'DATABASE' AS object_type, database_owner AS owner_role, created AS created_on FROM SNOWFLAKE.INFORMATION_SCHEMA.DATABASES WHERE database_name != 'SNOWFLAKE'
+                UNION SELECT schema_name AS object_name, 'SCHEMA' AS object_type, schema_owner AS owner_role, created AS created_on FROM SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA;
+            """
+            all_objects = session.sql(query).collect()
+            all_objects = pd.DataFrame(all_objects)
+            all_objects = all_objects[all_objects['OBJECT_TYPE'] == selected_object]
+            all_objects['COMPLIANT'] = all_objects['OBJECT_NAME'].apply(lambda name: check_compliance(name, selected_object))
+
+            total_objects = all_objects[all_objects['OBJECT_TYPE'] == selected_object].shape[0]
+            compliant_objects = (all_objects['COMPLIANT'] == True).sum()
+            non_compliant_objects = total_objects - compliant_objects
+
+        # Display metrics
+        col1, col2, col3 = st.columns(3)
+        col1.metric("**Total Objects Monitored**", total_objects)
+        col2.metric("**Total Non-Compliant Objects**", non_compliant_objects)
+        col3.metric("**Total Compliant Objects**", compliant_objects)
+
+        st.markdown("")
+        col4, col5 = st.columns(2)
+        with col4:
+            st.subheader("Compliance distribution")
+            labels = ['Compliant', 'Non-Compliant']
+            sizes = [compliant_objects, non_compliant_objects]
+            colors = ['#4CAF50', '#FF5252']
+            explode = (0.1, 0)
+
+            fig1, ax1 = plt.subplots()
+            ax1.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.1f%%', shadow=True, startangle=90, textprops={'fontsize': 8}, radius=0.6)
+            ax1.axis('equal')
+            st.pyplot(fig1, clear_figure=True)
+        with col5:
+            st.subheader("Top Non-Compliant Roles")
+            non_compliant = all_objects[all_objects['COMPLIANT'] == False]
+            non_compliant_roles_count = non_compliant.groupby('OWNER_ROLE').size().reset_index(name='Count')
+            st.bar_chart(non_compliant_roles_count, x='Count', y='OWNER_ROLE')
+            
+        st.subheader("Detailed Compliance Status")
+        detailed_data = all_objects[all_objects['OBJECT_TYPE'] == selected_object][['OBJECT_NAME', 'COMPLIANT', 'OWNER_ROLE', 'CREATED_ON']]
+        st.dataframe(detailed_data.style.applymap(lambda x: 'background-color: #4CAF50' if x else 'background-color: #FF5252', subset=['COMPLIANT']), hide_index=True, use_container_width=True)

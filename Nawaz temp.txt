@@ -1,0 +1,162 @@
+import streamlit as st
+from snowflake.snowpark.context import get_active_session
+import pandas as pd
+import re
+
+def check_quotes(input_string):
+    pattern = r"'[^']*'(?:\s*,\s*'[^']*')+"
+    input = input_string.strip()
+    all_single_quoted = False
+    if (re.match(pattern, input)) or (input.startswith("'") and input.endswith("'") and input.strip("'").isalnum()):
+        all_single_quoted = True
+    return all_single_quoted
+
+session = get_active_session()
+user = st.experimental_user["user_name"]
+
+st.set_page_config(layout = "wide")
+st.title(':blue[Naming Navigator]')
+
+tabs = st.tabs(['**Overview**', '**Naming Convention Builder**', '**Monitor Conventions**', '**Notification Center**:shield:'])
+
+with tabs[1]:
+    with st.expander("**Manage variables**"):
+        data = session.sql("SELECT id, name, value FROM STREAMLIT_DB.APP_SCH.VARIABLES WHERE IS_ACTIVE = True ORDER BY ID;").collect()
+        st.subheader('Variables')
+        names = []
+        # st.write(st.session_state)
+        for dt in data:
+            id = dt['ID']
+            name = dt['NAME'].strip("{}'")
+            value = dt['VALUE'].strip("{}[]'").replace("\"","'")
+            temp = -1
+            edit_key = f"{id}_edit"
+            delete_key = f"{id}_delete"
+            st.session_state[edit_key] = st.session_state.get(edit_key, False)
+            st.session_state[delete_key] = st.session_state.get(delete_key, False)
+            names.append(name)
+            
+            var_disabled = not st.session_state[edit_key]
+            val_disabled = not st.session_state[edit_key]
+            
+            with st.container():
+                col1, col2, col3, col4, col5 = st.columns([2,2,0.5,0.5,0.5])
+                with col1:
+                    edit_var = st.text_input('Variable Name', value=name, key=f"{id}_name", disabled=var_disabled)
+                    low_edit_var = edit_var.lower()
+                with col2:
+                    edit_val = st.text_input('Values', value=value, key=f"{id}_value", disabled=val_disabled) 
+                    up_edit_val = edit_val.upper()
+                with col3:
+                    st.write("")
+                    st.write("")
+                    if st.button("Edit", key=f"{id}_edit_btn"):
+                        st.session_state[edit_key] = not st.session_state[edit_key]
+                        st.experimental_rerun()
+                with col4:
+                    st.write("")
+                    st.write("")
+                    delete = st.button("Delete", key=f'''{id}_delete_btn''')
+                    if delete or st.session_state[delete_key]:
+                        st.session_state[delete_key] = True 
+                        temp = session.sql(f"""select count(*) from STREAMLIT_DB.APP_SCH.NAMING_RULES_TST where IS_ACTIVE = True and TEMPLATE like '%{low_edit_var}%';""").collect()[0][0]                     
+                with col5:
+                    st.write("")
+                    st.write("")
+                    if st.button("Save", key=f"{id}_save", disabled=var_disabled): 
+                        if value != up_edit_val and check_quotes(edit_val):                           
+                            query1 = f"""update STREAMLIT_DB.APP_SCH.VARIABLES set IS_ACTIVE = False where ID = {id};"""
+                            query2 = f"""insert into STREAMLIT_DB.APP_SCH.VARIABLES(ID, NAME, VALUE, IS_ACTIVE, CREATED_TS, CREATED_BY)
+                                        select {id}, '{edit_var}', array_construct({up_edit_val}), True, current_timestamp, '{user}';"""
+                            session.sql(query1).collect()
+                            session.sql(query2).collect() 
+                            st.session_state[edit_key] = not st.session_state[edit_key]
+                            st.experimental_rerun()                        
+                        if low_edit_var != name and low_edit_var not in names:   
+                            update_query = f"""UPDATE STREAMLIT_DB.APP_SCH.VARIABLES
+                                            SET NAME = '{low_edit_var}', UPDATED_TS = current_timestamp, UPDATED_BY = '{user}'
+                                            WHERE ID = {id};"""
+                            session.sql(update_query).collect()
+                            st.session_state[edit_key] = not st.session_state[edit_key]
+                            st.experimental_rerun()
+                        if value == up_edit_val and low_edit_var == name:
+                            st.session_state[edit_key] = not st.session_state[edit_key]
+                            st.experimental_rerun()
+                if not check_quotes(edit_val):
+                    st.write(f":red[Add the variable values as 'VAL1','VAL2' and so on]")
+                    st.session_state[edit_key] = not st.session_state[edit_key]
+                elif low_edit_var != name:
+                    st.write(f":red[Variable with the same name already exists]")
+                    st.session_state[edit_key] = not st.session_state[edit_key]
+                if st.session_state[f'{id}_delete'] and temp > 0:
+                    st.write(f":red[Cannot delete the variable. {temp} naming conventions depend on it]")
+                    st.session_state[f'{id}_delete'] = not st.session_state[f'{id}_delete']
+                elif temp == 0 and st.session_state[f'{id}_delete']:
+                    st.write("Are you sure you want to delete the variable?")
+                    coly, coln = st.columns([1,1])
+                    with coly:
+                        yes = st.button(f":red[Yes]")
+                        if yes: 
+                            st.session_state[delete_key] = True
+                            session.sql(f"""delete from STREAMLIT_DB.APP_SCH.VARIABLES where ID = {id};""").collect()
+                            st.experimental_rerun()
+                    with coln:
+                        no = st.button("No")
+                        if no:
+                            st.session_state[delete_key] = False
+                            st.experimental_rerun()
+
+        
+        add_var = st.button("Add Variables")
+        if "addvar_state" not in st.session_state:
+            st.session_state.addvar_state = False
+                
+        if add_var or st.session_state.addvar_state:
+            st.session_state.addvar_state = True           
+            
+            st.subheader('Add Variables')
+            st.session_state.op = ''
+            result = -1    
+            with st.container():
+                cola, colb, colc, cold = st.columns([2,2,1,1])
+                with cola:
+                    new_var = st.text_input('Variable Name', key=f"new_var")
+                    low_new_var = new_var.lower()
+                with colc:
+                    st.write("")
+                    st.write("")
+                    upload = st.button("Upload Files")
+                    if "upload_state" not in st.session_state:
+                        st.session_state.upload_state = False
+                    if upload or st.session_state.upload_state: 
+                        st.session_state.upload_state = True
+                        fname = new_var + ".csv"
+                        query = f"select count(METADATA$FILENAME) from @STREAMLIT_DB.APP_SCH.VARIABLE_VALS where METADATA$FILENAME like '{fname}';"
+                        result = session.sql(query).collect()[0][0]                        
+                        if result > 0: 
+                            df = session.read.csv(f"@VARIABLE_VALS/{fname}").collect()                          
+                            csv_
+                            val = ''
+                            for data in df:
+                                csv_val = csv_val + data[0] + ', '
+                            st.session_state.op = csv_val[:-2]                     
+                with colb:
+                    new_val = st.text_input('Values', value=st.session_state.op, key=f"new_val")  
+                    up_new_val = new_val.upper()
+                with cold:
+                    st.write("")
+                    st.write("")
+                    if st.button("Submit"):                   
+                        if low_new_var not in names and check_quotes(up_new_val):                         
+                            ins_query = f"""insert into STREAMLIT_DB.APP_SCH.VARIABLES(NAME, VALUE, IS_ACTIVE, CREATED_TS, CREATED_BY)
+                                            select '{low_new_var}', array_construct({up_new_val}), True, current_timestamp, '{user}';"""
+                            session.sql(ins_query).collect()
+                            st.session_state.addvar_state = False
+                            st.session_state.upload_state = False
+                            st.experimental_rerun()
+                if result == 0:
+                    st.write(f":red[Given path: '@VARIABLE_VALS/{fname}' could not be found or is empty.]")
+                if up_new_val != '' and not check_quotes(up_new_val):
+                    st.write(f":red[Add the variable values as 'VAL1','VAL2' and so on]")
+                if low_new_var in names:
+                    st.write(f":red[Variable with the same name already exists]")

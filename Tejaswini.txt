@@ -1,0 +1,339 @@
+import streamlit as st
+from snowflake.snowpark.context import get_active_session
+import pandas as pd
+from snowflake.snowpark.functions import col
+import matplotlib.pyplot as plt
+import altair as alt
+
+
+st.set_page_config(layout = "wide")
+
+st.markdown("""
+    <style>
+        body {
+            background-color: #F0F2F6;
+            color: #333333;
+        }
+        .main {
+            background-color: #FFFFFF;
+            border-radius: 10px;
+            padding: 20px;
+        }
+        h1 {
+            color: #11567F;
+        }
+        .css-1oe4hzb {
+            background-color: #11567F;
+            border: none;
+            color: white;
+            font-size: 16px;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .css-1oe4hzb:hover {
+            background-color: #0E4A68;
+        }
+        .stButton>button {
+            background-color: #1A6CE7;
+            color: white;
+            border: None;
+            padding: 10px 20px;
+            border-radius: 30px;
+            cursor: pointer;
+        }
+        .stButton>button:hover {
+            background-color: #0E4A68;
+        }
+        .stTextInput>div>div>input {
+            border: None;
+            padding: 10px;
+            border-radius: 37px;
+        }
+        .stTextInput>div>div>input:focus {
+            border: 30px;
+        }
+        .stSelectbox>div>div>input {
+            border: 1px solid #CCCCCC;
+            padding: 10px;
+            border-radius: 30px;
+        }
+        .stSelectbox>div>div>input:focus {
+            border: 1px solid #11567F;
+        }
+        .css-12oz5g7 {
+            border-radius: 10px;
+        }
+        .stMetric, .stChart, .stDataFrame {
+            background-color: #FFFFFF;
+            border: 1px solid #EEEEEE;
+            border-radius: 10px;
+            padding: 10px;
+            margin-bottom: 20px;
+        }
+        .stMetric label, .stMetric div, .stChart label, .stDataFrame label {
+            color: #11567F;
+            font-weight: bold;
+        }
+        .stExpander {
+            background-color: #E5F6FE;
+            border: 1px solid #11567F;
+            border-radius: 10px;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title(':blue[Naming Navigator]')
+
+def check_compliance(object_name, object_type):
+    naming_rules_df = pd.DataFrame(session.sql("""SELECT * FROM STREAMLIT_DB.APP_SCH.NAMING_RULES_TEJ where is_active = TRUE""").collect())
+    variables_df = pd.DataFrame(session.sql("SELECT * FROM STREAMLIT_DB.APP_SCH.VARIABLES").collect())
+
+    filtered_rules = naming_rules_df[naming_rules_df['OBJECT_TYPE'] == object_type]
+
+    if filtered_rules.empty:
+        return False
+
+    template = filtered_rules.iloc[0]['TEMPLATE']
+    template_parts = template.split('_')
+    object_parts = object_name.split('_')
+
+    # if len(template_parts) != len(object_parts):
+    #     return False
+
+    for template_part, object_part in zip(template_parts, object_parts):
+        variable_values = variables_df[variables_df['NAME'] == template_part]['VALUE'].values
+        if len(variable_values) == 0 or object_part not in variable_values[0]:
+            return False
+
+session = get_active_session()
+
+tabs = st.tabs(['**Overview**', '**Naming Convention Builder**', '**Monitor Conventions**', '**Notification Center**:shield:'])
+
+with tabs[1]:
+    with st.expander("**Manage variables**"):
+        query = """SELECT id, name, value FROM STREAMLIT_DB.APP_SCH.VARIABLES WHERE IS_ACTIVE = True ORDER BY ID;"""
+        data = session.sql(query).collect()
+        df1 = pd.DataFrame(data, columns=["ID", "NAME", "VALUE"])
+    
+        for dt in data:
+            id = dt['ID']
+            name1 = dt['NAME'].strip("{}'")
+            value1 = dt['VALUE'].strip("{}'").replace("\"","'")
+
+            if f"{id}_edit" not in st.session_state:
+                st.session_state[f"{id}_edit"] = False
+
+            var_disabled = not st.session_state[f"{id}_edit"]
+            val_disabled = not st.session_state[f"{id}_edit"]
+
+            with st.container():
+                col1, col2, col3, col4, col5 = st.columns([2, 3, 1, 1, 1])
+                with col1:
+                    var = st.text_input('Variable Name', value=name1, key=f"{id}_name", disabled=var_disabled)
+                with col2:
+                    new_val1 = st.text_input('Values', value=value1, key=f"{id}_value", disabled=val_disabled)
+                with col3:
+                    st.write("")
+                    st.write("")
+                    if st.button("Edit", key=f"{id}_edit_btn"):
+                        st.session_state[f"{id}_edit"] = not st.session_state[f"{id}_edit"]
+                        st.experimental_rerun()
+                with col4:
+                    st.write("")
+                    st.write("")
+                    if st.button("Delete", key=f"{id}_delete"):
+                        del_query = f"""DELETE FROM STREAMLIT_DB.APP_SCH.VARIABLES WHERE ID = {id};"""
+                        session.sql(del_query).collect()
+                        st.experimental_rerun()
+                with col5:
+                    st.write("")
+                    st.write("")
+                    if st.button("Save", key=f"{id}_save", disabled=var_disabled):
+                        update_query = f"""UPDATE STREAMLIT_DB.APP_SCH.VARIABLES
+                                        SET NAME = '{var}', VALUE = '{new_val1}'
+                                        WHERE ID = {id};"""
+                        session.sql(update_query).collect()
+                        st.session_state[f"{id}_edit"] = False
+                        st.experimental_rerun()
+
+        st.subheader('Add Variables')
+        with st.form("myform", clear_on_submit=True):
+            cola, colb, colc = st.columns([2, 2, 1])
+            with cola:
+                new_var = st.text_input('Variable Name', key='new_var')
+            with colb:
+                new_val = st.text_input('Values', key='new_val')
+            with colc:
+                st.write("")
+                st.write("")
+                submit = st.form_submit_button("Submit")
+    
+            if submit:
+                if new_var:
+                    new_val_str = new_val.strip("[]")
+                    if new_var.islower() and new_val_str.isupper():
+                        ins_query = f"""INSERT INTO STREAMLIT_DB.APP_SCH.VARIABLES (NAME, VALUE, IS_ACTIVE, CREATED_TS, CREATED_BY)
+                                        SELECT '{new_var}', array_construct({new_val_str}), True, current_timestamp(), current_user();"""
+                        session.sql(ins_query).collect()
+                        st.session_state['new_var'] = ''
+                        st.session_state['new_val'] = ''
+                        st.experimental_rerun()
+                    else:
+                        st.write(':red[Please enter Variable Name in lowercase and Values in uppercase]')
+
+    
+
+with tabs[2]:
+    columns =st.columns(( 8, 3))
+    template = pd.DataFrame(session.sql('SELECT distinct UPPER(OBJECT_TYPE) OBJECT_TYPE, TEMPLATE FROM STREAMLIT_DB.APP_SCH.NAMING_RULES_TEJ WHERE IS_ACTIVE =TRUE;').collect())
+    object_types_list = sorted(template['OBJECT_TYPE'].tolist())
+    if len(object_types_list) > 0:
+        with columns[0]:
+            selected_object = st.selectbox(
+                '***Choose object type***',
+                object_types_list)
+            covention=sorted(template.loc[template['OBJECT_TYPE']==selected_object]['TEMPLATE'].tolist())
+            st.subheader(f":black[Current Naming Convention]")
+            st.subheader(f":green[_<{covention[0]}>_]")
+            st.write("")
+
+            database_names = pd.DataFrame(session.sql('show databases history in account;').collect())
+            database_names= database_names[pd.isna(database_names['dropped_on'])]
+            database_list = sorted(database_names['name'].unique().tolist())
+
+            with columns[1]:
+                st.subheader(" ")
+                
+                with st.expander(":hourglass_flowing_sand:  **Filters**"):
+                    selected_database = st.selectbox(
+                        'Database',
+                        database_list)
+                    
+                    schema_names = pd.DataFrame(session.sql('show schemas history in account;').collect())
+                    schema_names= schema_names[pd.isna(schema_names['dropped_on'])]
+                    schema_list = sorted(schema_names.loc[schema_names['database_name']==selected_database]['name'].unique().tolist())
+                
+                    # with columns[2]:
+                    selected_schema_tb0 = st.selectbox(
+                        'Schema',
+                        schema_list)
+
+            query = """select database_name as object_name, 'DATABASE' as object_type, database_owner as owner_role, created as created_on from SNOWFLAKE.INFORMATION_SCHEMA.DATABASES  where database_name!='SNOWFLAKE'
+            union select schema_name as object_name, 'SCHEMA' as object_type, schema_owner as owner_role, created as created_on from SNOWFLAKE.ACCOUNT_USAGE.SCHEMATA;"""
+            all_objects =session.sql(query).collect()
+            all_objects = pd.DataFrame(all_objects)
+            all_objects = all_objects[all_objects['OBJECT_TYPE'] == selected_object]
+            all_objects['COMPLIANT'] = all_objects['OBJECT_NAME'].apply(lambda name: check_compliance(name,selected_object))
+
+
+            total_objects = all_objects[all_objects['OBJECT_TYPE'] == selected_object].shape[0]
+            
+            compliant_objects = (all_objects['COMPLIANT'] == True).sum()
+            non_compliant_objects = total_objects - compliant_objects
+    
+        # Display metrics
+        col1, col2, col3 = st.columns(3)
+        col1.metric("**Total Objects Monitored**", total_objects)
+        # col1.markdown(f"Hover over for details: {all_objects[all_objects['OBJECT_TYPE'] == selected_object]['OBJECT_NAME'].tolist()}")
+        col2.metric("**Total Non-Compliant Objects**", non_compliant_objects)
+        # col2.markdown(f"Hover over for details: {all_objects[(all_objects['OBJECT_TYPE'] == selected_object) & (all_objects['COMPLIANT'] == False)]['OBJECT_NAME'].tolist()}")
+        col3.metric("**Total Compliant Objects**", compliant_objects)
+        # col3.markdown(f"Hover over for details: {all_objects[(all_objects['OBJECT_TYPE'] == selected_object) & (all_objects['COMPLIANT'] == True)]['OBJECT_NAME'].tolist()}")
+
+
+        st.markdown("")
+        col4,col5 = st.columns(2)
+        with col4:
+        # Pie chart
+            st.subheader("Compliance distribution")
+            labels = ['Compliant', 'Non-Compliant']
+            sizes = [compliant_objects, non_compliant_objects]
+            colors = ['#4CAF50', '#FF5252']
+            explode = (0.1, 0)
+            
+            fig1, ax1 = plt.subplots()
+            ax1.pie(sizes, explode=explode, labels=labels, colors=colors, autopct='%1.1f%%', shadow=True, startangle=90, textprops={'fontsize': 6}, radius=0.6)
+            ax1.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+            st.pyplot(fig1,  clear_figure=True)
+        with col5:
+        # Bar chart
+            st.subheader("Top Non-Compliant Roles")
+            non_compliant = all_objects[all_objects['COMPLIANT'] == False]
+    
+            # Group by 'OWNER_ROLE' and count occurrences
+            non_compliant_roles_count = non_compliant.groupby('OWNER_ROLE').size().reset_index(name='Count')
+            st.bar_chart(non_compliant_roles_count, x = 'Count', y = 'OWNER_ROLE')
+     
+        # Detailed table
+        detailed_data = all_objects[all_objects['OBJECT_TYPE'] == selected_object][['OBJECT_NAME', 'COMPLIANT', 'OWNER_ROLE', 'CREATED_ON']]
+        st.dataframe(detailed_data.style.applymap(lambda x: 'background-color: #4CAF50' if x else 'background-color: #FF5252', subset=['COMPLIANT']), hide_index=True, use_container_width = True)
+
+#         # Define CSS style for the table
+#         table_style = """
+#         <style>
+#             table {
+#                 width: 100%;
+#                 border-spacing: 0;
+#                 border-collapse: collapse; /* Ensure borders collapse between cells */
+#             }
+#             th, td {
+#                 padding: 8px;
+#                 text-align: left;
+#                 border-bottom: 1px solid black; /* Add a bottom border to each cell */
+#             }
+#             th {
+#                 background-color: #f2f2f2;
+#             }
+#             tr:nth-child(even) {
+#                 background-color: #ffffff;
+#             }
+#             tr:nth-child(odd) {
+#                 background-color: #f9f9f9;
+#             }
+#             .compliant-true {
+#                 background-color: #4CAF50 !important;
+#                 color: white;
+#             }
+#             .compliant-false {
+#                 background-color: #FF5252 !important;
+#                 color: white;
+#             }
+#         </style>
+#         """
+        
+   
+#         html_table = table_style + "<table>"
+#         html_table += "<tr><th>Object Name</th><th>Compliant</th><th>Owner Role</th><th>Created On</th></tr>"
+        
+#         for index, row in detailed_data.iterrows():
+#             compliant_class = 'compliant-true' if row['COMPLIANT'] else 'compliant-false'
+#             html_table += f"<tr><td>{row['OBJECT_NAME']}</td><td class='{compliant_class}'>{row['COMPLIANT']}</td><td>{row['OWNER_ROLE']}</td><td>{row['CREATED_ON']}</td></tr>"
+        
+#         html_table += "</table>"
+        
+#         # Display using st.markdown
+#         st.markdown(html_table, unsafe_allow_html=True)
+
+# ###################################################
+
+#         st.markdown("")
+#         st.markdown("")
+
+            
+#         my_expander = st.expander(label='Expand me')
+#         with my_expander:
+#             'Hello there!'
+#             clicked = st.button('Click me!')
+    
+
+
+            
+               
+
+
+
+  
+   
+
+
